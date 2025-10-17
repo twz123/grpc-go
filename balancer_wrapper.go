@@ -282,6 +282,10 @@ type acBalancerWrapper struct {
 	// dropped or updated. This is required as closures can't be compared for
 	// equality.
 	healthData *healthData
+
+	connectMu       sync.Mutex
+	shutdown        chan struct{}
+	pendingConnects sync.WaitGroup
 }
 
 // healthData holds data related to health state reporting.
@@ -351,12 +355,49 @@ func (acbw *acBalancerWrapper) UpdateAddresses(addrs []resolver.Address) {
 }
 
 func (acbw *acBalancerWrapper) Connect() {
-	go acbw.ac.connect()
+	var shutdown chan struct{}
+
+	acbw.connectMu.Lock()
+	defer acbw.connectMu.Unlock()
+
+	if acbw.shutdown == nil {
+		shutdown = make(chan struct{})
+		acbw.shutdown = shutdown
+	} else {
+		shutdown = acbw.shutdown
+		select {
+		case <-shutdown:
+			panic("connect after shutdown")
+		default:
+		}
+	}
+
+	acbw.pendingConnects.Add(1)
+	go func() {
+		defer acbw.pendingConnects.Done()
+		acbw.ac.connect(shutdown)
+	}()
 }
 
 func (acbw *acBalancerWrapper) Shutdown() {
 	acbw.closeProducers()
 	acbw.ccb.cc.removeAddrConn(acbw.ac, errConnDrain)
+
+	acbw.connectMu.Lock()
+	if acbw.shutdown == nil {
+		shutdown := make(chan struct{})
+		close(shutdown)
+		acbw.shutdown = shutdown
+	} else {
+		select {
+		case <-acbw.shutdown:
+		default:
+			close(acbw.shutdown)
+		}
+	}
+	acbw.connectMu.Unlock()
+
+	acbw.pendingConnects.Wait()
 }
 
 // NewStream begins a streaming RPC on the addrConn.  If the addrConn is not

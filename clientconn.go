@@ -925,7 +925,7 @@ func (cc *ClientConn) incrCallsFailed() {
 // connect starts creating a transport.
 // It does nothing if the ac is not IDLE.
 // TODO(bar) Move this to the addrConn section.
-func (ac *addrConn) connect() error {
+func (ac *addrConn) connect(abort <-chan struct{}) error {
 	ac.mu.Lock()
 	if ac.state == connectivity.Shutdown {
 		if logger.V(2) {
@@ -942,7 +942,7 @@ func (ac *addrConn) connect() error {
 		return nil
 	}
 
-	ac.resetTransportAndUnlock()
+	ac.resetTransportAndUnlock(abort)
 	return nil
 }
 
@@ -1018,7 +1018,7 @@ func (ac *addrConn) updateAddrs(addrs []resolver.Address) {
 
 	// Since we were connecting/connected, we should start a new connection
 	// attempt.
-	go ac.resetTransportAndUnlock()
+	go ac.resetTransportAndUnlock(nil)
 }
 
 // getServerName determines the serverName to be used in the connection
@@ -1249,7 +1249,7 @@ func (ac *addrConn) adjustParams(r transport.GoAwayReason) {
 // resetTransportAndUnlock unconditionally connects the addrConn.
 //
 // ac.mu must be held by the caller, and this function will guarantee it is released.
-func (ac *addrConn) resetTransportAndUnlock() {
+func (ac *addrConn) resetTransportAndUnlock(abort <-chan struct{}) {
 	acCtx := ac.ctx
 	if acCtx.Err() != nil {
 		ac.mu.Unlock()
@@ -1306,6 +1306,9 @@ func (ac *addrConn) resetTransportAndUnlock() {
 		case <-b:
 			timer.Stop()
 		case <-acCtx.Done():
+			timer.Stop()
+			return
+		case <-abort:
 			timer.Stop()
 			return
 		}
