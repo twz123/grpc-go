@@ -1250,8 +1250,16 @@ func (ac *addrConn) adjustParams(r transport.GoAwayReason) {
 //
 // ac.mu must be held by the caller, and this function will guarantee it is released.
 func (ac *addrConn) resetTransportAndUnlock(abort <-chan struct{}) {
-	acCtx := ac.ctx
-	if acCtx.Err() != nil {
+	ctx, cancel := context.WithCancel(ac.ctx)
+	go func() {
+		select {
+		case <-abort:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	if ctx.Err() != nil {
 		ac.mu.Unlock()
 		return
 	}
@@ -1279,12 +1287,12 @@ func (ac *addrConn) resetTransportAndUnlock(abort <-chan struct{}) {
 	ac.updateConnectivityState(connectivity.Connecting, nil)
 	ac.mu.Unlock()
 
-	if err := ac.tryAllAddrs(acCtx, addrs, connectDeadline); err != nil {
+	if err := ac.tryAllAddrs(ctx, addrs, connectDeadline); err != nil {
 		// TODO: #7534 - Move re-resolution requests into the pick_first LB policy
 		// to ensure one resolution request per pass instead of per subconn failure.
 		ac.cc.resolveNow(resolver.ResolveNowOptions{})
 		ac.mu.Lock()
-		if acCtx.Err() != nil {
+		if ctx.Err() != nil {
 			// addrConn was torn down.
 			ac.mu.Unlock()
 			return
@@ -1305,16 +1313,13 @@ func (ac *addrConn) resetTransportAndUnlock(abort <-chan struct{}) {
 			ac.mu.Unlock()
 		case <-b:
 			timer.Stop()
-		case <-acCtx.Done():
-			timer.Stop()
-			return
-		case <-abort:
+		case <-ctx.Done():
 			timer.Stop()
 			return
 		}
 
 		ac.mu.Lock()
-		if acCtx.Err() == nil {
+		if ctx.Err() == nil {
 			ac.updateConnectivityState(connectivity.Idle, err)
 		}
 		ac.mu.Unlock()
