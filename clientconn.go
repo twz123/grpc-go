@@ -925,25 +925,24 @@ func (cc *ClientConn) incrCallsFailed() {
 // connect starts creating a transport.
 // It does nothing if the ac is not IDLE.
 // TODO(bar) Move this to the addrConn section.
-func (ac *addrConn) connect(abort <-chan struct{}) error {
+func (ac *addrConn) connect(abort <-chan struct{}) {
 	ac.mu.Lock()
 	if ac.state == connectivity.Shutdown {
 		if logger.V(2) {
 			logger.Infof("connect called on shutdown addrConn; ignoring.")
 		}
 		ac.mu.Unlock()
-		return errConnClosing
+		return
 	}
 	if ac.state != connectivity.Idle {
 		if logger.V(2) {
 			logger.Infof("connect called on addrConn in non-idle state (%v); ignoring.", ac.state)
 		}
 		ac.mu.Unlock()
-		return nil
+		return
 	}
 
 	ac.resetTransportAndUnlock(abort)
-	return nil
 }
 
 // equalAddressIgnoringBalAttributes returns true is a and b are considered equal.
@@ -962,7 +961,7 @@ func equalAddressesIgnoringBalAttributes(a, b []resolver.Address) bool {
 
 // updateAddrs updates ac.addrs with the new addresses list and handles active
 // connections or connection attempts.
-func (ac *addrConn) updateAddrs(addrs []resolver.Address) {
+func (ac *addrConn) updateAddrs(abort <-chan struct{}, addrs []resolver.Address) {
 	addrs = copyAddresses(addrs)
 	limit := len(addrs)
 	if limit > 5 {
@@ -1018,7 +1017,7 @@ func (ac *addrConn) updateAddrs(addrs []resolver.Address) {
 
 	// Since we were connecting/connected, we should start a new connection
 	// attempt.
-	go ac.resetTransportAndUnlock(nil)
+	ac.resetTransportAndUnlock(abort)
 }
 
 // getServerName determines the serverName to be used in the connection

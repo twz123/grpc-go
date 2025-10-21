@@ -283,7 +283,7 @@ type acBalancerWrapper struct {
 	// equality.
 	healthData *healthData
 
-	connectMu       sync.Mutex
+	shutdownMu      sync.Mutex
 	shutdown        chan struct{}
 	pendingConnects sync.WaitGroup
 }
@@ -351,12 +351,18 @@ func (acbw *acBalancerWrapper) String() string {
 }
 
 func (acbw *acBalancerWrapper) UpdateAddresses(addrs []resolver.Address) {
-	acbw.ac.updateAddrs(addrs)
+	acbw.goFunc(func(shutdown <-chan struct{}) {
+		acbw.ac.updateAddrs(shutdown, addrs)
+	})
 }
 
 func (acbw *acBalancerWrapper) Connect() {
-	acbw.connectMu.Lock()
-	defer acbw.connectMu.Unlock()
+	acbw.goFunc(acbw.ac.connect)
+}
+
+func (acbw *acBalancerWrapper) goFunc(fn func(shutdown <-chan struct{})) {
+	acbw.shutdownMu.Lock()
+	defer acbw.shutdownMu.Unlock()
 
 	shutdown := acbw.shutdown
 	if shutdown == nil {
@@ -367,7 +373,7 @@ func (acbw *acBalancerWrapper) Connect() {
 	acbw.pendingConnects.Add(1)
 	go func() {
 		defer acbw.pendingConnects.Done()
-		acbw.ac.connect(shutdown)
+		fn(shutdown)
 	}()
 }
 
@@ -375,8 +381,8 @@ func (acbw *acBalancerWrapper) Shutdown() {
 	acbw.closeProducers()
 	acbw.ccb.cc.removeAddrConn(acbw.ac, errConnDrain)
 
-	acbw.connectMu.Lock()
-	defer acbw.connectMu.Unlock()
+	acbw.shutdownMu.Lock()
+	defer acbw.shutdownMu.Unlock()
 
 	shutdown := acbw.shutdown
 	acbw.shutdown = nil
