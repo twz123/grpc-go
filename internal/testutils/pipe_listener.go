@@ -86,6 +86,7 @@ func (p *PipeListener) Dialer() func(string, time.Duration) (net.Conn, error) {
 	}
 }
 
+// ContextDialer dials a using a context.
 func (p *PipeListener) ContextDialer() func(context.Context, string) (net.Conn, error) {
 	return func(ctx context.Context, _ string) (net.Conn, error) {
 		connChan := make(chan net.Conn)

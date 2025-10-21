@@ -355,21 +355,13 @@ func (acbw *acBalancerWrapper) UpdateAddresses(addrs []resolver.Address) {
 }
 
 func (acbw *acBalancerWrapper) Connect() {
-	var shutdown chan struct{}
-
 	acbw.connectMu.Lock()
 	defer acbw.connectMu.Unlock()
 
-	if acbw.shutdown == nil {
+	shutdown := acbw.shutdown
+	if shutdown == nil {
 		shutdown = make(chan struct{})
 		acbw.shutdown = shutdown
-	} else {
-		shutdown = acbw.shutdown
-		select {
-		case <-shutdown:
-			panic("connect after shutdown")
-		default:
-		}
 	}
 
 	acbw.pendingConnects.Add(1)
@@ -384,19 +376,13 @@ func (acbw *acBalancerWrapper) Shutdown() {
 	acbw.ccb.cc.removeAddrConn(acbw.ac, errConnDrain)
 
 	acbw.connectMu.Lock()
+	defer acbw.connectMu.Unlock()
 	if acbw.shutdown == nil {
-		shutdown := make(chan struct{})
-		close(shutdown)
-		acbw.shutdown = shutdown
-	} else {
-		select {
-		case <-acbw.shutdown:
-		default:
-			close(acbw.shutdown)
-		}
+		return
 	}
-	acbw.connectMu.Unlock()
 
+	close(acbw.shutdown)
+	acbw.shutdown = nil
 	acbw.pendingConnects.Wait()
 }
 
