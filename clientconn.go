@@ -1373,6 +1373,9 @@ func (ac *addrConn) tryAllAddrs(ctx context.Context, addrs []resolver.Address, c
 // new transport.
 func (ac *addrConn) createTransport(ctx context.Context, addr resolver.Address, copts transport.ConnectOptions, connectDeadline time.Time) error {
 	addr.ServerName = ac.cc.getServerName(addr)
+
+	var healthCheckStarted atomic.Bool
+	healthCheckDone := make(chan struct{})
 	hctx, hcancel := context.WithCancel(ctx)
 
 	onClose := func(r transport.GoAwayReason) {
@@ -1401,6 +1404,9 @@ func (ac *addrConn) createTransport(ctx context.Context, addr resolver.Address, 
 		// Always go idle and wait for the LB policy to initiate a new
 		// connection attempt.
 		ac.updateConnectivityState(connectivity.Idle, nil)
+		if healthCheckStarted.Load() {
+			<-healthCheckDone
+		}
 	}
 
 	connectCtx, cancel := context.WithDeadline(ctx, connectDeadline)
@@ -1413,7 +1419,6 @@ func (ac *addrConn) createTransport(ctx context.Context, addr resolver.Address, 
 			logger.Infof("Creating new client transport to %q: %v", addr, err)
 		}
 		// newTr is either nil, or closed.
-		hcancel()
 		channelz.Warningf(logger, ac.channelz, "grpc: addrConn.createTransport failed to connect to %s. Err: %v", addr, err)
 		return err
 	}
@@ -1447,7 +1452,7 @@ func (ac *addrConn) createTransport(ctx context.Context, addr resolver.Address, 
 	}
 	ac.curAddr = addr
 	ac.transport = newTr
-	ac.startHealthCheck(hctx) // Will set state to READY if appropriate.
+	healthCheckStarted.Store(ac.startHealthCheck(hctx, healthCheckDone)) // Will set state to READY if appropriate.
 	return nil
 }
 
@@ -1463,7 +1468,7 @@ func (ac *addrConn) createTransport(ctx context.Context, addr resolver.Address, 
 // It sets addrConn to READY if the health checking stream is not started.
 //
 // Caller must hold ac.mu.
-func (ac *addrConn) startHealthCheck(ctx context.Context) {
+func (ac *addrConn) startHealthCheck(ctx context.Context, done chan<- struct{}) bool {
 	var healthcheckManagingState bool
 	defer func() {
 		if !healthcheckManagingState {
@@ -1472,14 +1477,14 @@ func (ac *addrConn) startHealthCheck(ctx context.Context) {
 	}()
 
 	if ac.cc.dopts.disableHealthCheck {
-		return
+		return false
 	}
 	healthCheckConfig := ac.cc.healthCheckConfig()
 	if healthCheckConfig == nil {
-		return
+		return false
 	}
 	if !ac.scopts.HealthCheckEnabled {
-		return
+		return false
 	}
 	healthCheckFunc := internal.HealthCheckFunc
 	if healthCheckFunc == nil {
@@ -1487,7 +1492,7 @@ func (ac *addrConn) startHealthCheck(ctx context.Context) {
 		//
 		// TODO: add a link to the health check doc in the error message.
 		channelz.Error(logger, ac.channelz, "Health check is requested but health check function is not set.")
-		return
+		return false
 	}
 
 	healthcheckManagingState = true
@@ -1513,6 +1518,7 @@ func (ac *addrConn) startHealthCheck(ctx context.Context) {
 	}
 	// Start the health checking stream.
 	go func() {
+		defer close(done)
 		err := healthCheckFunc(ctx, newStream, setConnectivityState, healthCheckConfig.ServiceName)
 		if err != nil {
 			if status.Code(err) == codes.Unimplemented {
@@ -1522,6 +1528,7 @@ func (ac *addrConn) startHealthCheck(ctx context.Context) {
 			}
 		}
 	}()
+	return true
 }
 
 func (ac *addrConn) resetConnectBackoff() {
