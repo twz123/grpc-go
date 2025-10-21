@@ -377,13 +377,13 @@ func (acbw *acBalancerWrapper) Shutdown() {
 
 	acbw.connectMu.Lock()
 	defer acbw.connectMu.Unlock()
-	if acbw.shutdown == nil {
-		return
-	}
 
-	close(acbw.shutdown)
+	shutdown := acbw.shutdown
 	acbw.shutdown = nil
-	acbw.pendingConnects.Wait()
+	if shutdown != nil {
+		close(shutdown)
+		acbw.pendingConnects.Wait()
+	}
 }
 
 // NewStream begins a streaming RPC on the addrConn.  If the addrConn is not
